@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+    <meta charset="UTF-8">
+    <title>Managementul unei farmacii</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 20px; background-color: #f4f4f9; }
+        h1 { color: #2c3e50; text-align: center; }
+        
+        /* Layout */
+        .control-panel { display: flex; flex-wrap: wrap; gap: 20px; justify-content: center; margin-bottom: 20px; }
+        .category-group { background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); width: 250px; }
+        .category-title { font-weight: bold; margin-bottom: 10px; color: #555; border-bottom: 2px solid #eee; padding-bottom: 5px; }
+        
+        button { 
+            display: block; width: 100%; margin: 5px 0; padding: 8px; 
+            cursor: pointer; background-color: #3498db; color: white; 
+            border: none; border-radius: 10px; transition: background 0.3s;
+        }
+        button:hover { background-color: #2980b9; }
+
+        #commitBtn {
+            background-color: #e67e22;
+            padding: 15px;
+            font-size: 1.1em;
+            display: none; /* Ascuns pana nu e nevoie de el */
+            margin: 20px auto;
+            max-width: 300px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+        }
+        #commitBtn:hover { background-color: #d35400; }
+        
+        /* Stilul tabelelor */
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; background: white; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        th, td { border: 1px solid #ddd; padding: 10px; text-align: left; }
+        th { cursor: pointer; background-color: #2c3e50; color: white; position: sticky; top: 0; }
+        tr:nth-child(even) { background-color: #f8f9fa; }
+        tr:hover { background-color: #e9ecef; }
+
+        /* Stilul editarii */
+        .editable:hover { background-color: #fff3cd; cursor: text; }
+        .cell-modified { background-color: #ffeebc !important; border: 2px solid #ffc107; }
+        
+        /*stil buton stergere*/
+        .delete-btn { background-color: #e74c3c; width: auto; padding: 5px 10px; }
+        .delete-btn:hover { background-color: #c0392b; }
+        
+        #status { height: 30px; text-align: center; font-weight: bold; margin-top: 10px; }
+        
+        /* SQL Box */
+        .sql-box { margin: 30px auto; max-width: 800px; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        textarea { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+    </style>
+</head>
+<body>
+
+    <h1>Managementul unei Farmacii</h1>
+
+    <div id="status"></div>
+
+    <button id="commitBtn" onclick="commitChanges()">Salvează Modificările (0)</button>
+
+    <div class="control-panel" id="buttonContainer"></div>
+
+    <div id="output"></div>
+
+    <div class="sql-box">
+        <h3>Executare SQL Direct</h3>
+        <textarea id="sqlInput" rows="4" placeholder="Ex: SELECT * FROM angajat"></textarea>
+        <button onclick="runRawSQL()" style="background-color: #27ae60; margin-top: 10px;">Executa Comanda SQL</button>
+    </div>
+
+    <script>
+        const API_URL = 'http://localhost:3000/api';
+        
+        // Lista pentru schimbarile ulterioare
+        let pendingChanges = [];
+
+        let currentSort = { column: null, direction: null };
+
+        const tablesConfig = {
+            'angajat':      { pk: 'cnp_angajat', label: 'Angajat', category: 'Personal' },
+            'client':       { pk: 'cnp_client',  label: 'Client',  category: 'Personal' },
+            'furnizor':     { pk: 'id_furnizor', label: 'Furnizor', category: 'Personal' },
+            'produs':              { pk: 'id_produs', label: 'Produs', category: 'Produs' },
+            'medicament':          { pk: 'id_produs', label: 'Medicament',     category: 'Produs' },
+            'supliment_alimentar': { pk: 'id_produs', label: 'Supliment',      category: 'Produs' },
+            'cosmetic':            { pk: 'id_produs', label: 'Cosmetic',       category: 'Produs' },
+            'stoc':        { pk: 'nr_lot',        label: 'Stoc', category: 'Gestiune' },
+            'echipament':  { pk: 'id_echipament', label: 'Echipamente',      category: 'Gestiune' },
+            'tranzactie':         { pk: 'id_tranzactie',          label: 'Tranzactie', category: 'Tranzactie' },
+            'detalii_tranzactie': { pk: 'id_detaliu_tranzactie', label: 'Detalii Tranzactie', category: 'Tranzactie' },
+            'reteta':             { pk: 'id_reteta',             label: 'Rețeta',      category: 'Tranzactie' },
+            'v_responsabili_echipamente':      { pk: 'cnp_angajat', label: 'v_responsabili_echipamente (compus)', category: 'Vizualizari' },
+            'v_vanzari_produse': { pk: 'id_produs',   label: 'v_vanzari_produse (complex)',      category: 'Vizualizari' }
+        };
+
+        window.onload = function() {
+            const container = document.getElementById('buttonContainer');
+            const categories = {};
+
+            for (const [tableName, config] of Object.entries(tablesConfig)) {
+                if (!categories[config.category]) categories[config.category] = [];
+                categories[config.category].push({ name: tableName, ...config });
+            }
+
+            for (const [catName, tables] of Object.entries(categories)) {
+                const groupDiv = document.createElement('div');
+                groupDiv.className = 'category-group';
+                groupDiv.innerHTML = `<div class="category-title">${catName}</div>`;
+                tables.forEach(t => {
+                    const btn = document.createElement('button');
+                    btn.innerText = t.label;
+                    btn.onclick = () => {
+                        // Resetarea sortarii cand schimbam tabelele
+                        currentSort = { column: null, direction: null }; 
+                        loadTable(t.name, t.pk);
+                    };
+                    groupDiv.appendChild(btn);
+                });
+                container.appendChild(groupDiv);
+            }
+        };
+
+        async function loadTable(tableName, pkColumn, clickedColumn = null) {
+            pendingChanges = [];
+            updateCommitButton();
+            updateStatus(`Se încarca: ${tableName}...`);
+
+            // 1. Calcularea statusului sortarii
+            if (clickedColumn) {
+                if (currentSort.column === clickedColumn) {
+                    // asc-desc-original
+                    if (currentSort.direction === 'asc') currentSort.direction = 'desc';
+                    else if (currentSort.direction === 'desc') currentSort.direction = null; 
+                    else currentSort.direction = 'asc';
+                } else {
+                    // Coloana noua 
+                    currentSort.column = clickedColumn;
+                    currentSort.direction = 'asc';
+                }
+            } else if (!currentSort.column) {
+                 // Cum a fost incarcat initial, adica nu faci nimic
+            }
+
+            try {
+                let url = `${API_URL}/list?table=${tableName}`;
+                
+                // Daca am directie de sortare, adauga, daca nu, pastreaza
+                if (currentSort.direction) {
+                    url += `&sort=${currentSort.column}&order=${currentSort.direction}`;
+                } else {
+                    // Sortarea originala dupa PK
+                    url += `&sort=${pkColumn}&order=asc`;
+                }
+
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (data.error) throw new Error(data.error);
+                renderTable(data, tableName, pkColumn);
+                const config = tablesConfig[tableName];
+            
+             // 2. Determinam prefixul si formatarea numelui
+                let prefix = "Tabel";
+                let numeAfisat = tableName.toUpperCase(); // Ex: ANGAJAT
+
+                // Daca este in categoria 'Vederi SQL', schimbam textul
+                if (config && config.category === 'Vizualizari') {
+                    prefix = "Vizualizare";
+                    numeAfisat = tableName; // Ex: v_farmacisti (litere mici, exact cum ai cerut)
+                }
+
+                updateStatus(`${prefix}: ${numeAfisat}`);
+            } catch (err) {
+                updateStatus("Eroare: " + err.message, true);
+            }
+        }
+
+        function renderTable(data, sourceTable, pkColumn) {
+            const output = document.getElementById('output');
+            output.innerHTML = '';
+            
+            if (!data || data.length === 0) { 
+                output.innerHTML = '<p style="text-align:center">Nu exista înregistrari.</p>'; 
+                return; 
+            }
+
+            const table = document.createElement('table');
+            const thead = table.createTHead();
+            const row = thead.insertRow();
+            
+            const keys = Object.keys(data[0]);
+            keys.forEach(key => {
+                const th = document.createElement('th');
+
+                //sagetica pt indicarea ordinii in care s-au sortat tabelele
+                let arrow = '';
+                if (currentSort.column === key) {
+                    if (currentSort.direction === 'asc') arrow = ' ▲';
+                    if (currentSort.direction === 'desc') arrow = ' ▼';
+                }
+                
+                th.innerText = key + arrow;
+                
+                if(sourceTable) th.onclick = () => loadTable(sourceTable, pkColumn, key);
+                
+                row.appendChild(th);
+            });
+
+            if (sourceTable) {
+                const th = document.createElement('th');
+                th.innerText = "Actiuni";
+                row.appendChild(th);
+            }
+
+            const tbody = table.createTBody();
+            data.forEach(item => {
+                const tr = tbody.insertRow();
+                keys.forEach(key => {
+                    const td = tr.insertCell();
+    
+                    // --- NEW: DATE FORMATTING LOGIC ---
+                    let displayValue = item[key];
+                    
+                    // Check if the value is a string and looks like a Date (starts with YYYY-MM-DD and has a 'T')
+                    if (typeof displayValue === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(displayValue)) {
+                        displayValue = displayValue.split('T')[0]; // Split at 'T' and keep only the first part
+                    }
+                    
+                    td.innerText = displayValue !== null ? displayValue : 'NULL';
+                    
+                    if (sourceTable) {
+                        td.classList.add('editable');
+                        td.title = "Dublu-click pentru editare";
+                        td.ondblclick = function() {
+                            makeEditable(this, sourceTable, pkColumn, item[pkColumn], key);
+                        };
+                    }
+                });
+
+                if (sourceTable) {
+                    const actionTd = tr.insertCell();
+                    const delBtn = document.createElement('button');
+                    delBtn.innerText = 'Sterge';
+                    delBtn.className = 'delete-btn';
+                    delBtn.onclick = () => deleteRecord(sourceTable, pkColumn, item[pkColumn]);
+                    actionTd.appendChild(delBtn);
+                }
+            });
+            output.appendChild(table);
+        }
+
+        function makeEditable(td, table, pkCol, pkVal, colName) {
+            if (td.querySelector('input')) return;
+
+            const originalValue = td.innerText === 'NULL' ? '' : td.innerText;
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.value = originalValue;
+            input.style.width = '100%';
+            
+            input.onblur = () => saveCell(td, input.value, originalValue, table, pkCol, pkVal, colName);
+            input.onkeydown = (e) => {
+                if(e.key === 'Enter') input.blur();
+            };
+
+            td.innerHTML = '';
+            td.appendChild(input);
+            input.focus();
+        }
+
+        function saveCell(td, newValue, originalValue, table, pkCol, pkVal, colName) {
+            td.innerHTML = newValue === '' ? 'NULL' : newValue;
+
+            // Daca s-a schimbat valoarea, adauga in lista de modificari pt commit
+            if (newValue !== originalValue) {
+                td.classList.add('cell-modified');
+                
+                // Adaugare..
+                pendingChanges.push({
+                    table: table,
+                    pkCol: pkCol,
+                    pkVal: pkVal,
+                    colName: colName,
+                    value: newValue
+                });
+                updateCommitButton();
+            }
+        }
+
+        function updateCommitButton() {
+            const btn = document.getElementById('commitBtn');
+            if (pendingChanges.length > 0) {
+                btn.style.display = 'block';
+                btn.innerText = `Commit (${pendingChanges.length})`;
+            } else {
+                btn.style.display = 'none';
+            }
+        }
+
+        async function commitChanges() {
+            if (!pendingChanges.length) return;
+            if (!confirm(`Salvezi ${pendingChanges.length} modificări?`)) return;
+
+            updateStatus("Se salveaza...");
+            
+            try {
+                // We use a loop to process requests one by one to catch individual errors
+                for (const change of pendingChanges) {
+                    const response = await fetch(`${API_URL}/update`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(change)
+                    });
+
+                    // 1. CHECK IF SERVER SENT AN ERROR
+                    const result = await response.json(); // Read the JSON response
+                    
+                    if (!response.ok || result.error) {
+                        // Throw the error text sent from server
+                        throw new Error(result.error || "Eroare necunoscută");
+                    }
+                }
+
+                alert("Toate modificările au fost salvate!");
+                pendingChanges = []; 
+                updateCommitButton();
+                document.getElementById('output').innerHTML = ''; 
+                updateStatus("Salvare completă. Reîncarcă tabelul."); // Clear table to force reload
+                
+            } catch (err) {
+                console.error(err);
+                // 2. SHOW THE ACTUAL ERROR MESSAGE TO USER
+                alert("Eroare la salvare: " + err.message); 
+                updateStatus("Eroare!", true);
+                pendingChanges = []; 
+                updateCommitButton();
+            }
+        }
+
+        async function deleteRecord(table, pkCol, pkVal) {
+            if(!confirm(`Sigur stergi inregistrarea cu ${pkCol}=${pkVal}?`)) return;
+            try {
+                const response = await fetch(`${API_URL}/delete/${table}/${pkCol}/${pkVal}`, { method: 'DELETE' });
+                if (!response.ok) throw new Error(await response.text());
+                alert("Sters cu succes!");
+                loadTable(table, pkCol); 
+            } catch (err) {
+                alert("Eroare la stergere: " + err.message);
+            }
+        }
+
+        async function runRawSQL() {
+            const queryText = document.getElementById('sqlInput').value;
+            try {
+                const response = await fetch(`${API_URL}/run-sql`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: queryText })
+                });
+                const data = await response.json();
+                if(data.error) {
+                    document.getElementById('output').innerHTML = `<p style="color:red">Eroare SQL: ${data.error}</p>`;
+                } else if (Array.isArray(data)) {
+                    renderTable(data, null, null);
+                } else {
+                    document.getElementById('output').innerHTML = `<p style="color:green">Comanda OK! Rows affected: ${data.affectedRows}</p>`;
+                }
+            } catch (err) {
+                alert("Eroare conexiune: " + err.message);
+            }
+        }
+
+        function updateStatus(msg, isError = false) {
+            const status = document.getElementById('status');
+            status.innerText = msg;
+            status.style.color = isError ? 'red' : '#333';
+        }
+    </script>
+</body>
+</html>
